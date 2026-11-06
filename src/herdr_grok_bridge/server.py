@@ -23,6 +23,7 @@ from .allowlist import (
     build_agent_status_argv,
     build_pane_read_argv,
 )
+from .compat import run_agent_json_compatible
 from .config import BridgeConfig, load_config
 from .decode import (
     HerdrDecodeError,
@@ -88,13 +89,18 @@ def _tool_error(exc: Exception) -> ToolError:
     return ToolError(f"internal_error: {exc}")
 
 
-async def _run_herdr(herdr_argv: list[str]) -> str:
+async def _run_herdr_raw(herdr_argv: list[str]) -> str:
+    """Invoke allowlisted herdr argv; preserve RunnerError for compat retries."""
     config, runner = _require()
+    result = await runner.run(herdr_argv, timeout=config.timeout_seconds)
+    return result.stdout
+
+
+async def _run_herdr(herdr_argv: list[str]) -> str:
     try:
-        result = await runner.run(herdr_argv, timeout=config.timeout_seconds)
+        return await _run_herdr_raw(herdr_argv)
     except (RunnerError, AllowlistError, ValidationError) as exc:
         raise _tool_error(exc) from exc
-    return result.stdout
 
 
 @server.tool(annotations=READ)
@@ -115,26 +121,37 @@ async def bridge_info() -> dict[str, Any]:
 
 @server.tool(annotations=READ)
 async def list_agents() -> dict[str, Any]:
-    """List active Herdr agents with status and pane_id targets for later reads."""
+    """List active Herdr agents with status and pane_id targets for later reads.
+
+    Uses ``herdr agent list`` without ``--format json`` first (Herdr 0.8.0
+    default JSON; that release rejects the flag). Retries with the flag only
+    if the default path fails with a CLI/JSON error.
+    """
     try:
-        stdout = await _run_herdr(build_agent_list_argv())
-        return decode_agent_list(stdout)
-    except (HerdrDecodeError, ToolError) as exc:
-        if isinstance(exc, ToolError):
-            raise
+        return await run_agent_json_compatible(
+            _run_herdr_raw,
+            without_format=build_agent_list_argv(with_format_json=False),
+            with_format=build_agent_list_argv(with_format_json=True),
+            decode=decode_agent_list,
+        )
+    except (ValidationError, AllowlistError, HerdrDecodeError, RunnerError) as exc:
         raise _tool_error(exc) from exc
 
 
 @server.tool(annotations=READ)
 async def get_agent_status(pane_id: str) -> dict[str, Any]:
-    """Get status for one live agent by pane_id (required; not a bare kind like "claude")."""
+    """Get status for one live agent by pane_id (required; not a bare kind like "claude").
+
+    Same ``--format json`` compatibility policy as ``list_agents``.
+    """
     try:
-        argv = build_agent_status_argv(pane_id)
-        stdout = await _run_herdr(argv)
-        return decode_agent_status(stdout)
-    except (ValidationError, AllowlistError, HerdrDecodeError, ToolError) as exc:
-        if isinstance(exc, ToolError):
-            raise
+        return await run_agent_json_compatible(
+            _run_herdr_raw,
+            without_format=build_agent_status_argv(pane_id, with_format_json=False),
+            with_format=build_agent_status_argv(pane_id, with_format_json=True),
+            decode=decode_agent_status,
+        )
+    except (ValidationError, AllowlistError, HerdrDecodeError, RunnerError) as exc:
         raise _tool_error(exc) from exc
 
 

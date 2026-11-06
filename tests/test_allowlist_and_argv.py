@@ -28,18 +28,32 @@ def _cfg(**kwargs) -> BridgeConfig:
     return BridgeConfig(**base)  # type: ignore[arg-type]
 
 
-def test_agent_list_argv() -> None:
-    assert build_agent_list_argv() == ["agent", "list", "--format", "json"]
+def test_agent_list_argv_omits_format_by_default() -> None:
+    assert build_agent_list_argv() == ["agent", "list"]
+    assert build_agent_list_argv(with_format_json=True) == [
+        "agent",
+        "list",
+        "--format",
+        "json",
+    ]
 
 
-def test_agent_status_argv() -> None:
-    assert build_agent_status_argv("wF:p1") == [
+def test_agent_status_argv_omits_format_by_default() -> None:
+    assert build_agent_status_argv("wF:p1") == ["agent", "get", "wF:p1"]
+    assert build_agent_status_argv("wF:p1", with_format_json=True) == [
         "agent",
         "get",
         "wF:p1",
         "--format",
         "json",
     ]
+
+
+def test_allowlist_accepts_both_format_shapes() -> None:
+    assert_herdr_argv_allowed(["agent", "list"])
+    assert_herdr_argv_allowed(["agent", "list", "--format", "json"])
+    assert_herdr_argv_allowed(["agent", "get", "w1:p2"])
+    assert_herdr_argv_allowed(["agent", "get", "w1:p2", "--format", "json"])
 
 
 def test_pane_read_visible_omits_lines() -> None:
@@ -69,7 +83,7 @@ def test_pane_read_recent_includes_capped_lines() -> None:
 def test_local_transport_argv() -> None:
     cfg = _cfg(mode="local", herdr_bin="/usr/local/bin/herdr")
     full = build_transport_argv(cfg, build_agent_list_argv())
-    assert full == ["/usr/local/bin/herdr", "agent", "list", "--format", "json"]
+    assert full == ["/usr/local/bin/herdr", "agent", "list"]
 
 
 def test_ssh_transport_argv_batchmode_and_strict() -> None:
@@ -92,14 +106,7 @@ def test_ssh_transport_argv_batchmode_and_strict() -> None:
     # Destination then -- then herdr argv
     assert "deploy@herdr-box" in full
     dash = full.index("--")
-    assert full[dash:] == [
-        "--",
-        "herdr",
-        "agent",
-        "list",
-        "--format",
-        "json",
-    ]
+    assert full[dash:] == ["--", "herdr", "agent", "list"]
 
 
 def test_mutation_routes_hard_denied() -> None:

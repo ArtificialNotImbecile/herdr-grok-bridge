@@ -12,7 +12,7 @@ from herdr_grok_bridge.runner import MockRunner, RunnerError
 async def test_mock_runner_records_argv() -> None:
     runner = MockRunner(stdout='{"result":{"type":"agent_list","agents":[]}}')
     result = await runner.run(build_agent_list_argv(), timeout=5)
-    assert runner.calls == [["agent", "list", "--format", "json"]]
+    assert runner.calls == [["agent", "list"]]
     assert result.exit_code == 0
 
 

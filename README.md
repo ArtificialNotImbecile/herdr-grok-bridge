@@ -13,8 +13,8 @@ Strict allowlist of three read operations (plus a non-sensitive `bridge_info`):
 
 | Tool | Herdr command | Purpose |
 | --- | --- | --- |
-| `list_agents` | `herdr agent list --format json` | Active agents, statuses, `pane_id` targets |
-| `get_agent_status` | `herdr agent get <pane_id> --format json` | Status for one live pane |
+| `list_agents` | `herdr agent list` (+ optional `--format json` retry) | Active agents, statuses, `pane_id` targets |
+| `get_agent_status` | `herdr agent get <pane_id>` (+ optional `--format json` retry) | Status for one live pane |
 | `read_pane` | `herdr pane read <pane_id> --source …` | Bounded pane text (redacted / truncated) |
 | `bridge_info` | _(none)_ | Mode, timeouts, limits — never SSH host |
 
@@ -49,8 +49,8 @@ Read targets must be **live `pane_id` values** from `list_agents` (for example
 
 ```sh
 python3 -m venv ~/.venvs/herdr-grok-bridge
-~/.venvs/herdr-grok-bridge/bin/pip install /path/to/herdr_grok_bridge-0.1.0-py3-none-any.whl
-# or: pip install /path/to/herdr_grok_bridge-0.1.0.tar.gz
+~/.venvs/herdr-grok-bridge/bin/pip install /path/to/herdr_grok_bridge-0.1.1-py3-none-any.whl
+# or: pip install /path/to/herdr_grok_bridge-0.1.1.tar.gz
 ```
 
 Entry point: `~/.venvs/herdr-grok-bridge/bin/herdr-grok-bridge`
@@ -130,6 +130,10 @@ Remote shape: `ssh … <destination> -- herdr <allowlisted args…>`
 
 ## Compatibility notes
 
+- Herdr **0.8.0** rejects `agent list|get --format json` and already prints
+  JSON by default. The bridge calls those commands **without** `--format json`
+  first, then retries once *with* the flag only if the default path fails with
+  a CLI/JSON error (newer CLIs that require the flag).
 - `list_agents` expects JSON shaped like
   `{ "id": "cli:agent:list", "result": { "type": "agent_list", "agents": [ … ] } }`.
 - Some Herdr versions reject `--lines` with `--source visible` / `detection`.

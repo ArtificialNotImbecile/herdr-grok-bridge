@@ -57,7 +57,7 @@ async def test_list_and_call_list_agents() -> None:
         text = result.content[0].text  # type: ignore[index]
         payload = json.loads(text)
         assert payload["agents"][0]["pane_id"] == "wF:p1"
-        assert runner.calls == [["agent", "list", "--format", "json"]]
+        assert runner.calls == [["agent", "list"]]
 
 
 @pytest.mark.asyncio

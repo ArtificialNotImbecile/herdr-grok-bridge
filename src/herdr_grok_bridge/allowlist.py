@@ -68,17 +68,27 @@ def _assert_safe_tokens(argv: list[str]) -> None:
             raise AllowlistError(f"refusing unexpected flag: {token}")
 
 
-def build_agent_list_argv() -> list[str]:
-    """``herdr agent list --format json``."""
-    argv = ["agent", "list", "--format", "json"]
+def build_agent_list_argv(*, with_format_json: bool = False) -> list[str]:
+    """``herdr agent list`` (+ optional ``--format json`` for newer CLIs).
+
+    Herdr 0.8.0 rejects ``--format json`` and already emits JSON by default, so
+    the default omits the flag.
+    """
+    argv = ["agent", "list"]
+    if with_format_json:
+        argv.extend(["--format", "json"])
     _assert_safe_tokens(argv)
     return argv
 
 
-def build_agent_status_argv(pane_id: str) -> list[str]:
-    """``herdr agent get <pane_id> --format json``."""
+def build_agent_status_argv(
+    pane_id: str, *, with_format_json: bool = False
+) -> list[str]:
+    """``herdr agent get <pane_id>`` (+ optional ``--format json``)."""
     pid = validate_pane_id(pane_id)
-    argv = ["agent", "get", pid, "--format", "json"]
+    argv = ["agent", "get", pid]
+    if with_format_json:
+        argv.extend(["--format", "json"])
     _assert_safe_tokens(argv)
     return argv
 
@@ -107,16 +117,19 @@ def assert_herdr_argv_allowed(herdr_argv: list[str]) -> None:
         raise AllowlistError("empty herdr argv")
     _assert_safe_tokens(herdr_argv)
 
-    if herdr_argv == ["agent", "list", "--format", "json"]:
+    if herdr_argv in (
+        ["agent", "list"],
+        ["agent", "list", "--format", "json"],
+    ):
         return
 
-    if (
-        len(herdr_argv) == 5
-        and herdr_argv[:2] == ["agent", "get"]
-        and herdr_argv[3:] == ["--format", "json"]
-    ):
+    if herdr_argv[:2] == ["agent", "get"] and len(herdr_argv) in (3, 5):
         validate_pane_id(herdr_argv[2])
-        return
+        if len(herdr_argv) == 3:
+            return
+        if herdr_argv[3:] == ["--format", "json"]:
+            return
+        raise AllowlistError(f"herdr argv not on read-only allowlist: {herdr_argv!r}")
 
     if (
         len(herdr_argv) in (5, 7)
