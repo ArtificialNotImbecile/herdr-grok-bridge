@@ -49,8 +49,8 @@ Read targets must be **live `pane_id` values** from `list_agents` (for example
 
 ```sh
 python3 -m venv ~/.venvs/herdr-grok-bridge
-~/.venvs/herdr-grok-bridge/bin/pip install /path/to/herdr_grok_bridge-0.1.1-py3-none-any.whl
-# or: pip install /path/to/herdr_grok_bridge-0.1.1.tar.gz
+~/.venvs/herdr-grok-bridge/bin/pip install /path/to/herdr_grok_bridge-0.1.2-py3-none-any.whl
+# or: pip install /path/to/herdr_grok_bridge-0.1.2.tar.gz
 ```
 
 Entry point: `~/.venvs/herdr-grok-bridge/bin/herdr-grok-bridge`
@@ -141,6 +141,23 @@ Remote shape: `ssh … <destination> -- herdr <allowlisted args…>`
   when requested.
 - For `recent` / `recent-unwrapped`, a capped `--lines` is always sent
   (default 80).
+
+## Error signaling (MCP `isError`)
+
+Validation failures, Herdr CLI failures, timeouts, and SSH/transport errors
+return a normal `tools/call` **result** with:
+
+```json
+{ "content": [{ "type": "text", "text": "…" }], "isError": true }
+```
+
+Clients must inspect **`isError` / `CallToolResult.is_error`**. Do not classify
+success vs failure by scraping the text body.
+
+**Unknown tools** (including any mutating name such as `agent_prompt` /
+`pane_run`): not registered on this server. The official MCP Python SDK
+rejects them with `isError: true` and message `Unknown tool: …` without
+invoking our runner — so no Herdr/SSH command runs.
 
 ## Development
 

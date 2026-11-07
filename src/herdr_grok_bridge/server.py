@@ -2,6 +2,12 @@
 
 This is an unofficial community bridge. It exposes MCP *tools* over stdio —
 not an embedded Herdr UI, Canvas, or refresh button.
+
+Tool failures return ``CallToolResult(is_error=True)`` (JSON ``isError: true``).
+Do not treat plain text that happens to mention an error as a substitute for
+that flag. Unknown tool names are handled by the MCP SDK: they yield
+``isError: true`` with an ``Unknown tool: …`` message and never reach our
+runner (so no Herdr/SSH side effects).
 """
 
 from __future__ import annotations
@@ -10,11 +16,10 @@ import argparse
 import logging
 import os
 import sys
-from typing import Any, Literal
+from typing import Literal
 
 from mcp.server import MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
-from mcp_types import ToolAnnotations
+from mcp_types import CallToolResult, ToolAnnotations
 
 from . import __version__
 from .allowlist import (
@@ -31,6 +36,7 @@ from .decode import (
     decode_agent_status,
     decode_pane_text,
 )
+from .errors import tool_error_result, tool_success_result
 from .redaction import bound_text, redact_secrets
 from .runner import CommandRunner, RunnerError, SubprocessRunner
 from .validation import ValidationError
@@ -53,6 +59,8 @@ This server cannot prompt agents, send keys, focus panes, restart Herdr, or run
 arbitrary commands. Reading a pane can expose secrets that appeared in that
 terminal; treat output as sensitive. This is MCP tools only — not a native
 Herdr UI or Canvas refresh control.
+
+Failures set CallToolResult.isError=true. Do not infer failure from text alone.
 """
 
 _config: BridgeConfig | None = None
@@ -64,6 +72,8 @@ server = MCPServer(
     version=__version__,
     instructions=INSTRUCTIONS,
 )
+
+_FAIL_TYPES = (ValidationError, AllowlistError, HerdrDecodeError, RunnerError, ValueError)
 
 
 def configure(
@@ -83,10 +93,11 @@ def _require() -> tuple[BridgeConfig, CommandRunner]:
     return _config, _runner
 
 
-def _tool_error(exc: Exception) -> ToolError:
-    if isinstance(exc, (ValidationError, AllowlistError, HerdrDecodeError, RunnerError)):
-        return ToolError(str(exc))
-    return ToolError(f"internal_error: {exc}")
+def _fail(exc: BaseException) -> CallToolResult:
+    """Map domain failures to an MCP tool error result (isError=true)."""
+    if isinstance(exc, RunnerError):
+        return tool_error_result(f"{exc.code}: {exc.message}")
+    return tool_error_result(str(exc))
 
 
 async def _run_herdr_raw(herdr_argv: list[str]) -> str:
@@ -96,31 +107,31 @@ async def _run_herdr_raw(herdr_argv: list[str]) -> str:
     return result.stdout
 
 
-async def _run_herdr(herdr_argv: list[str]) -> str:
-    try:
-        return await _run_herdr_raw(herdr_argv)
-    except (RunnerError, AllowlistError, ValidationError) as exc:
-        raise _tool_error(exc) from exc
-
-
 @server.tool(annotations=READ)
-async def bridge_info() -> dict[str, Any]:
+async def bridge_info() -> CallToolResult:
     """Non-sensitive bridge configuration (mode, timeouts, limits). Never returns SSH host or credentials."""
-    config, _runner = _require()
-    return {
-        "name": "herdr-grok-bridge",
-        "version": __version__,
-        "unofficial": True,
-        "read_only": True,
-        "ui": False,
-        "note": "MCP tools only — not an embedded Herdr UI/Canvas refresh button.",
-        "config": config.public_dict(),
-        "tools": ["list_agents", "get_agent_status", "read_pane", "bridge_info"],
-    }
+    config, _ignored = _require()
+    return tool_success_result(
+        {
+            "name": "herdr-grok-bridge",
+            "version": __version__,
+            "unofficial": True,
+            "read_only": True,
+            "ui": False,
+            "note": "MCP tools only — not an embedded Herdr UI/Canvas refresh button.",
+            "error_signaling": (
+                "Tool failures use CallToolResult.isError=true (wire isError). "
+                "Unknown tools are rejected by the MCP SDK with isError=true and "
+                "never invoke Herdr."
+            ),
+            "config": config.public_dict(),
+            "tools": ["list_agents", "get_agent_status", "read_pane", "bridge_info"],
+        }
+    )
 
 
 @server.tool(annotations=READ)
-async def list_agents() -> dict[str, Any]:
+async def list_agents() -> CallToolResult:
     """List active Herdr agents with status and pane_id targets for later reads.
 
     Uses ``herdr agent list`` without ``--format json`` first (Herdr 0.8.0
@@ -128,31 +139,34 @@ async def list_agents() -> dict[str, Any]:
     if the default path fails with a CLI/JSON error.
     """
     try:
-        return await run_agent_json_compatible(
+        payload = await run_agent_json_compatible(
             _run_herdr_raw,
             without_format=build_agent_list_argv(with_format_json=False),
             with_format=build_agent_list_argv(with_format_json=True),
             decode=decode_agent_list,
         )
-    except (ValidationError, AllowlistError, HerdrDecodeError, RunnerError) as exc:
-        raise _tool_error(exc) from exc
+        return tool_success_result(payload)
+    except _FAIL_TYPES as exc:
+        return _fail(exc)
 
 
 @server.tool(annotations=READ)
-async def get_agent_status(pane_id: str) -> dict[str, Any]:
+async def get_agent_status(pane_id: str) -> CallToolResult:
     """Get status for one live agent by pane_id (required; not a bare kind like "claude").
 
     Same ``--format json`` compatibility policy as ``list_agents``.
+    Failures return ``isError: true`` (invalid pane_id, CLI/SSH/timeout errors).
     """
     try:
-        return await run_agent_json_compatible(
+        payload = await run_agent_json_compatible(
             _run_herdr_raw,
             without_format=build_agent_status_argv(pane_id, with_format_json=False),
             with_format=build_agent_status_argv(pane_id, with_format_json=True),
             decode=decode_agent_status,
         )
-    except (ValidationError, AllowlistError, HerdrDecodeError, RunnerError) as exc:
-        raise _tool_error(exc) from exc
+        return tool_success_result(payload)
+    except _FAIL_TYPES as exc:
+        return _fail(exc)
 
 
 @server.tool(annotations=READ)
@@ -160,20 +174,24 @@ async def read_pane(
     pane_id: str,
     source: Literal["visible", "recent", "recent-unwrapped", "detection"] = "visible",
     lines: int | None = None,
-) -> dict[str, Any]:
+) -> CallToolResult:
     """Read bounded output from a live pane_id.
 
     For ``visible`` / ``detection``, ``--lines`` is omitted for Herdr version
     compatibility; output is still truncated client-side. For recent sources,
     a capped ``--lines`` is sent (default 80). Secrets in terminal text are
     redacted best-effort.
+
+    Validation, Herdr CLI, timeout, and transport failures return
+    ``isError: true`` — never a successful result whose text merely describes
+    the error.
     """
     config, _ = _require()
     try:
         argv = build_pane_read_argv(
             pane_id, source, lines, max_lines=config.max_lines
         )
-        stdout = await _run_herdr(argv)
+        stdout = await _run_herdr_raw(argv)
         text = decode_pane_text(stdout)
         text = redact_secrets(text)
         # Client-side line trim for visible/detection when caller asked for lines.
@@ -182,17 +200,17 @@ async def read_pane(
             if len(parts) > lines:
                 text = "\n".join(parts[-lines:])
         text, truncated = bound_text(text, config.max_output_chars)
-        return {
-            "pane_id": pane_id.strip(),
-            "source": source,
-            "lines_requested": lines,
-            "truncated": truncated,
-            "text": text,
-        }
-    except (ValidationError, AllowlistError, HerdrDecodeError, ToolError) as exc:
-        if isinstance(exc, ToolError):
-            raise
-        raise _tool_error(exc) from exc
+        return tool_success_result(
+            {
+                "pane_id": pane_id.strip(),
+                "source": source,
+                "lines_requested": lines,
+                "truncated": truncated,
+                "text": text,
+            }
+        )
+    except _FAIL_TYPES as exc:
+        return _fail(exc)
 
 
 def main(argv: list[str] | None = None) -> None:
